@@ -11,8 +11,11 @@ CONTENTS
 
   1 slc proc r
   2 slc proc python
-
-https://chat.deepseek.com/a/chat/s/ba77ed74-8d5b-4e69-9fb5-e9883ca1dbc7
+  3 save subnet in autocall
+  4 slc run subnet (worked as is)
+    NOTE: The slc adds an additional note that a indexed join cannot used.
+    I don't think sas would choose an indexed join. Indexes can be created on the fly?
+    (you can select what join type you want but not indexed join?)
 
 
 How to setup a minimal python 310 to only import and export sas datasets
@@ -478,6 +481,729 @@ NOTE: Submitted statements took :
       real time : 2.206
       cpu time  : 0.156
 
+
+options validvarname=upcase; /*--- because r and python are case sensitive ---*/
+data workx.ids;
+  input ID1$ ID2$;
+cards4;
+A Z
+A Y
+A X
+B Z
+B Y
+C W
+D W
+E V
+E U
+F T
+;;;;
+run;quit;
+
+/*____                                   _                _     _                    _                  _ _
+|___ /   ___  __ ___   _____   ___ _   _| |__  _ __   ___| |_  (_)_ __    __ _ _   _| |_ ___   ___ __ _| | |
+  |_ \  / __|/ _` \ \ / / _ \ / __| | | | `_ \| `_ \ / _ \ __| | | `_ \  / _` | | | | __/ _ \ / __/ _` | | |
+ ___) | \__ \ (_| |\ V /  __/ \__ \ |_| | |_) | | | |  __/ |_  | | | | || (_| | |_| | || (_) | (_| (_| | | |
+|____/  |___/\__,_| \_/ \___| |___/\__,_|_.__/|_| |_|\___|\__| |_|_| |_| \__,_|\__,_|\__\___/ \___\__,_|_|_|
+
+*/
+
+data _null_;
+ file "c:/wpsoto/utl_subnet.sas";
+ input;
+ put _infile_;
+cards4;
+%macro utl_subnet(in=,out=,from=from,to=to,subnet=subnet,directed=1);
+/*----------------------------------------------------------------------
+SUBNET - Build connected subnets from pairs of nodes.
+Input Table :FROM TO pairs of rows
+Output Table:input data with &subnet added
+Work Tables:
+  NODES - List of all nodes in input.
+  NEW - List of new nodes to assign to current subnet.
+
+Algorithm:
+Pick next unassigned node and grow the subnet by adding all connected
+nodes. Repeat until all unassigned nodes are put into a subnet.
+
+To treat the graph as undirected set the DIRECTED parameter to 0.
+----------------------------------------------------------------------*/
+%local subnetid next getnext ;
+%*----------------------------------------------------------------------
+Initialize subnet id counter.
+-----------------------------------------------------------------------;
+%let subnetid=0;
+proc sql noprint;
+*----------------------------------------------------------------------;
+* Create list of all nodes ;
+*----------------------------------------------------------------------;
+  create table nodes as
+    select . as subnet, &from as node from &in where &from is not null
+    union
+    select . as subnet, &to as node from &in where &to is not null
+  ;
+*----------------------------------------------------------------------;
+* Generate query to get next unassigned node into a macro variable. ;
+*----------------------------------------------------------------------;
+%*----------------------------------------------------------------------
+Query is modified based on type of variable used for node.  This query
+is put into a macro variable so it can be used twice in the program.
+-----------------------------------------------------------------------;
+  select catx(' ','select ',case when type='num' then 'node'
+               else 'quote(trim(node),"''")' end
+             ,'into :next from nodes where subnet=.')
+    into :getnext
+    from dictionary.columns
+    where libname='WORK' and memname='NODES' and upcase(name)='NODE'
+  ;
+*----------------------------------------------------------------------;
+* Get next unassigned node ;
+*----------------------------------------------------------------------;
+  &getnext;
+%do %while (&sqlobs and not &sqlrc) ;
+*----------------------------------------------------------------------;
+* Set subnet to next id ;
+*----------------------------------------------------------------------;
+  %let subnetid=%eval(&subnetid+1);
+  update nodes set subnet=&subnetid where node=&next;
+  %do %while (&sqlobs) ;
+*----------------------------------------------------------------------;
+* Get list of connected nodes for this subnet ;
+*----------------------------------------------------------------------;
+    create table new as
+      select distinct a.&to as node
+        from &in a, nodes b, nodes c
+        where a.&from= b.node
+          and a.&to= c.node
+          and b.subnet = &subnetid
+          and c.subnet = .
+    ;
+%if "&directed" ne "1" %then %do;
+    insert into new
+      select distinct a.&from as node
+        from &in a, nodes b, nodes c
+        where a.&to= b.node
+          and a.&from= c.node
+          and b.subnet = &subnetid
+          and c.subnet = .
+    ;
+%end;
+*----------------------------------------------------------------------;
+* Update subnet for these nodes ;
+*----------------------------------------------------------------------;
+    update nodes set subnet=&subnetid
+      where node in (select node from new )
+    ;
+  %end;
+*----------------------------------------------------------------------;
+* Get next unassigned node ;
+*----------------------------------------------------------------------;
+  &getnext;
+%end;
+*----------------------------------------------------------------------;
+* Create output dataset by adding subnet number. ;
+*----------------------------------------------------------------------;
+  create table &out as
+    select distinct a.*,b.subnet as &subnet
+      from &in a , nodes b
+      where a.&from = b.node
+  ;
+quit;
+%mend utl_subnet ;
+;;;;
+run;
+
+/*  _         _                                     _                _
+| || |    ___| | ___   _ __ _   _ _ __    ___ _   _| |__  _ __   ___| |_
+| || |_  / __| |/ __| | `__| | | | `_ \  / __| | | | `_ \| `_ \ / _ \ __|
+|__   _| \__ \ | (__  | |  | |_| | | | | \__ \ |_| | |_) | | | |  __/ |_
+   |_|   |___/_|\___| |_|   \__,_|_| |_| |___/\__,_|_.__/|_| |_|\___|\__|
+
+*/
+
+%utlopts;
+%utl_subnet(in=workx.ids,out=workx.want,from=id1,to=id2,subnet=group,directed=0);
+
+proc print data=workx.want;
+run;
+
+/*---
+Altair SLC
+LIST: 7:41:29
+
+Obs    ID1    ID2    GROUP
+
+  1     A      X       1
+  2     A      Y       1
+  3     A      Z       1
+  4     B      Y       1
+  5     B      Z       1
+  6     C      W       2
+  7     D      W       2
+  8     E      U       3
+  9     E      V       3
+ 10     F      T       4
+---*/
+
+/*
+| | ___   __ _
+| |/ _ \ / _` |
+| | (_) | (_| |
+|_|\___/ \__, |
+         |___/
+*/
+
+1                                          Altair SLC      07:46 Thursday, January 29, 2026
+
+NOTE: Copyright 2002-2025 World Programming, an Altair Company
+NOTE: Altair SLC 2026 (05.26.01.00.000758)
+      Licensed to Roger DeAngelis
+NOTE: This session is executing on the X64_WIN11PRO platform and is running in 64 bit mode
+
+NOTE: AUTOEXEC processing beginning; file is C:\wpsoto\autoexec.sas
+NOTE: AUTOEXEC source line
+1       +  ?ods _all_ close;
+           ^
+ERROR: Expected a statement keyword : found "?"
+NOTE: Library workx assigned as follows:
+      Engine:        SAS7BDAT
+      Physical Name: d:\wpswrkx
+
+NOTE: Library slchelp assigned as follows:
+      Engine:        WPD
+      Physical Name: C:\Progra~1\Altair\SLC\2026\sashelp
+
+
+LOG:  7:46:45
+NOTE: 1 record was written to file PRINT
+
+NOTE: The data step took :
+      real time : 0.026
+      cpu time  : 0.015
+
+
+NOTE: AUTOEXEC processing completed
+
+1         %utlopts;
+MPRINT(UTLOPTS):  MERROR NOCENTER DETAILS SERROR NONUMBER FULLSTIMER NODATE DKRICOND=WARN DKROCOND=WARN NOSYNTAXCHECK ;
+MPRINT(UTLOPTS):  run;
+MPRINT(UTLOPTS):  quit;
+MLOGIC(UTLOPTS): Ending execution
+2         %utl_subnet(in=workx.ids,out=workx.want,from=id1,to=id2,subnet=group,directed=0);
+MLOGIC(UTL_SUBNET): Beginning execution
+MLOGIC(UTL_SUBNET): This macro was compiled from the autocall file c:\wpsoto\utl_subnet.sas
+MLOGIC(UTL_SUBNET): Parameter IN has value workx.ids
+MLOGIC(UTL_SUBNET): Parameter OUT has value workx.want
+MLOGIC(UTL_SUBNET): Parameter FROM has value id1
+MLOGIC(UTL_SUBNET): Parameter TO has value id2
+MLOGIC(UTL_SUBNET): Parameter SUBNET has value group
+MLOGIC(UTL_SUBNET): Parameter DIRECTED has value 0
+MLOGIC(UTL_SUBNET): %LOCAL  subnetid next getnext
+MLOGIC(UTL_SUBNET): %LET (variable name is subnetid)
+MPRINT(UTL_SUBNET):  proc sql noprint;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Create list of all nodes ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable in resolved to workx.ids
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable in resolved to workx.ids
+SYMBOLGEN: Macro variable to resolved to id2
+MPRINT(UTL_SUBNET):  create table nodes as select . as subnet, id1 as node from workx.ids where id1 is not null union select . as subnet, id2 as node from workx.ids where id2 is not null ;
+NOTE: Data set "WORK.nodes" has 13 observation(s) and 2 variable(s)
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Generate query to get next unassigned node into a macro variable. ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  select catx(' ','select ',case when type='num' then 'node' else 'quote(trim(node),"''")' end ,'into :next from nodes where subnet=.') into :getnext from dictionary.columns where libname='WORK' and memname='NODES' and
+                     upcase(name)='NODE' ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+
+2                                                                                                                         Altair SLC
+
+MPRINT(UTL_SUBNET):  * Get next unassigned node ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable getnext resolved to select quote(trim(node),"'") into :next from nodes where subnet=.
+MPRINT(UTL_SUBNET):  select quote(trim(node),"'") into :next from nodes where subnet=. ;
+SYMBOLGEN: Macro variable sqlobs resolved to 13
+SYMBOLGEN: Macro variable sqlrc resolved to 0
+MLOGIC(UTL_SUBNET): %DO %WHILE(&sqlobs and not &sqlrc) loop beginning; condition is TRUE
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Set subnet to next id ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MLOGIC(UTL_SUBNET): %LET (variable name is subnetid)
+SYMBOLGEN: Macro variable subnetid resolved to 0
+SYMBOLGEN: Macro variable subnetid resolved to 1
+SYMBOLGEN: Macro variable next resolved to 'A'
+MPRINT(UTL_SUBNET):  update nodes set subnet=1 where node='A' ;
+NOTE: 1 record(s) updated in table WORK.nodes
+SYMBOLGEN: Macro variable sqlobs resolved to 1
+MLOGIC(UTL_SUBNET): %DO %WHILE(&sqlobs) loop beginning; condition is TRUE
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Get list of connected nodes for this subnet ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable in resolved to workx.ids
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable subnetid resolved to 1
+MPRINT(UTL_SUBNET):  create table new as select distinct a.id2 as node from workx.ids a, nodes b, nodes c where a.id1= b.node and a.id2= c.node and b.subnet = 1 and c.subnet = . ;
+NOTE: No useful index exists on dataset WORKX.ids for indexed join use
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Data set "WORK.new" has 3 observation(s) and 1 variable(s)
+SYMBOLGEN: Macro variable directed resolved to 0
+MLOGIC(UTL_SUBNET): %IF condition "&directed" ne "1"  evaluated to TRUE
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable in resolved to workx.ids
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable subnetid resolved to 1
+MPRINT(UTL_SUBNET):  insert into new select distinct a.id1 as node from workx.ids a, nodes b, nodes c where a.id2= b.node and a.id1= c.node and b.subnet = 1 and c.subnet = . ;
+NOTE: No useful index exists on dataset WORKX.ids for indexed join use
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: 0 records were inserted into WORK.new
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Update subnet for these nodes ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable subnetid resolved to 1
+MPRINT(UTL_SUBNET):  update nodes set subnet=1 where node in (select node from new ) ;
+NOTE: 3 record(s) updated in table WORK.nodes
+SYMBOLGEN: Macro variable sqlobs resolved to 3
+MLOGIC(UTL_SUBNET): %DO %WHILE(&sqlobs) condition is TRUE; loop will iterate again
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Get list of connected nodes for this subnet ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable in resolved to workx.ids
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable subnetid resolved to 1
+MPRINT(UTL_SUBNET):  create table new as select distinct a.id2 as node from workx.ids a, nodes b, nodes c where a.id1= b.node and a.id2= c.node and b.subnet = 1 and c.subnet = . ;
+NOTE: No useful index exists on dataset WORKX.ids for indexed join use
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+
+3                                                                                                                         Altair SLC
+
+NOTE: Data set "WORK.new" has 0 observation(s) and 1 variable(s)
+SYMBOLGEN: Macro variable directed resolved to 0
+MLOGIC(UTL_SUBNET): %IF condition "&directed" ne "1"  evaluated to TRUE
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable in resolved to workx.ids
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable subnetid resolved to 1
+MPRINT(UTL_SUBNET):  insert into new select distinct a.id1 as node from workx.ids a, nodes b, nodes c where a.id2= b.node and a.id1= c.node and b.subnet = 1 and c.subnet = . ;
+NOTE: No useful index exists on dataset WORKX.ids for indexed join use
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: 1 records were inserted into WORK.new
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Update subnet for these nodes ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable subnetid resolved to 1
+MPRINT(UTL_SUBNET):  update nodes set subnet=1 where node in (select node from new ) ;
+NOTE: 1 record(s) updated in table WORK.nodes
+SYMBOLGEN: Macro variable sqlobs resolved to 1
+MLOGIC(UTL_SUBNET): %DO %WHILE(&sqlobs) condition is TRUE; loop will iterate again
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Get list of connected nodes for this subnet ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable in resolved to workx.ids
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable subnetid resolved to 1
+MPRINT(UTL_SUBNET):  create table new as select distinct a.id2 as node from workx.ids a, nodes b, nodes c where a.id1= b.node and a.id2= c.node and b.subnet = 1 and c.subnet = . ;
+NOTE: No useful index exists on dataset WORKX.ids for indexed join use
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Data set "WORK.new" has 0 observation(s) and 1 variable(s)
+SYMBOLGEN: Macro variable directed resolved to 0
+MLOGIC(UTL_SUBNET): %IF condition "&directed" ne "1"  evaluated to TRUE
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable in resolved to workx.ids
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable subnetid resolved to 1
+MPRINT(UTL_SUBNET):  insert into new select distinct a.id1 as node from workx.ids a, nodes b, nodes c where a.id2= b.node and a.id1= c.node and b.subnet = 1 and c.subnet = . ;
+NOTE: No useful index exists on dataset WORKX.ids for indexed join use
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: 0 records were inserted into WORK.new
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Update subnet for these nodes ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable subnetid resolved to 1
+MPRINT(UTL_SUBNET):  update nodes set subnet=1 where node in (select node from new ) ;
+NOTE: 0 record(s) updated in table WORK.nodes
+SYMBOLGEN: Macro variable sqlobs resolved to 0
+MLOGIC(UTL_SUBNET): %DO %WHILE(&sqlobs) condition is FALSE; loop will not iterate again
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Get next unassigned node ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable getnext resolved to select quote(trim(node),"'") into :next from nodes where subnet=.
+MPRINT(UTL_SUBNET):  select quote(trim(node),"'") into :next from nodes where subnet=. ;
+SYMBOLGEN: Macro variable sqlobs resolved to 8
+SYMBOLGEN: Macro variable sqlrc resolved to 0
+MLOGIC(UTL_SUBNET): %DO %WHILE(&sqlobs and not &sqlrc) condition is TRUE; loop will iterate again
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+
+4                                                                                                                         Altair SLC
+
+MPRINT(UTL_SUBNET):  * Set subnet to next id ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MLOGIC(UTL_SUBNET): %LET (variable name is subnetid)
+SYMBOLGEN: Macro variable subnetid resolved to 1
+SYMBOLGEN: Macro variable subnetid resolved to 2
+SYMBOLGEN: Macro variable next resolved to 'C'
+MPRINT(UTL_SUBNET):  update nodes set subnet=2 where node='C' ;
+NOTE: 1 record(s) updated in table WORK.nodes
+SYMBOLGEN: Macro variable sqlobs resolved to 1
+MLOGIC(UTL_SUBNET): %DO %WHILE(&sqlobs) loop beginning; condition is TRUE
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Get list of connected nodes for this subnet ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable in resolved to workx.ids
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable subnetid resolved to 2
+MPRINT(UTL_SUBNET):  create table new as select distinct a.id2 as node from workx.ids a, nodes b, nodes c where a.id1= b.node and a.id2= c.node and b.subnet = 2 and c.subnet = . ;
+NOTE: No useful index exists on dataset WORKX.ids for indexed join use
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Data set "WORK.new" has 1 observation(s) and 1 variable(s)
+SYMBOLGEN: Macro variable directed resolved to 0
+MLOGIC(UTL_SUBNET): %IF condition "&directed" ne "1"  evaluated to TRUE
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable in resolved to workx.ids
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable subnetid resolved to 2
+MPRINT(UTL_SUBNET):  insert into new select distinct a.id1 as node from workx.ids a, nodes b, nodes c where a.id2= b.node and a.id1= c.node and b.subnet = 2 and c.subnet = . ;
+NOTE: No useful index exists on dataset WORKX.ids for indexed join use
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: 0 records were inserted into WORK.new
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Update subnet for these nodes ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable subnetid resolved to 2
+MPRINT(UTL_SUBNET):  update nodes set subnet=2 where node in (select node from new ) ;
+NOTE: 1 record(s) updated in table WORK.nodes
+SYMBOLGEN: Macro variable sqlobs resolved to 1
+MLOGIC(UTL_SUBNET): %DO %WHILE(&sqlobs) condition is TRUE; loop will iterate again
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Get list of connected nodes for this subnet ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable in resolved to workx.ids
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable subnetid resolved to 2
+MPRINT(UTL_SUBNET):  create table new as select distinct a.id2 as node from workx.ids a, nodes b, nodes c where a.id1= b.node and a.id2= c.node and b.subnet = 2 and c.subnet = . ;
+NOTE: No useful index exists on dataset WORKX.ids for indexed join use
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Data set "WORK.new" has 0 observation(s) and 1 variable(s)
+SYMBOLGEN: Macro variable directed resolved to 0
+MLOGIC(UTL_SUBNET): %IF condition "&directed" ne "1"  evaluated to TRUE
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable in resolved to workx.ids
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable subnetid resolved to 2
+
+5                                                                                                                         Altair SLC
+
+MPRINT(UTL_SUBNET):  insert into new select distinct a.id1 as node from workx.ids a, nodes b, nodes c where a.id2= b.node and a.id1= c.node and b.subnet = 2 and c.subnet = . ;
+NOTE: No useful index exists on dataset WORKX.ids for indexed join use
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: 1 records were inserted into WORK.new
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Update subnet for these nodes ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable subnetid resolved to 2
+MPRINT(UTL_SUBNET):  update nodes set subnet=2 where node in (select node from new ) ;
+NOTE: 1 record(s) updated in table WORK.nodes
+SYMBOLGEN: Macro variable sqlobs resolved to 1
+MLOGIC(UTL_SUBNET): %DO %WHILE(&sqlobs) condition is TRUE; loop will iterate again
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Get list of connected nodes for this subnet ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable in resolved to workx.ids
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable subnetid resolved to 2
+MPRINT(UTL_SUBNET):  create table new as select distinct a.id2 as node from workx.ids a, nodes b, nodes c where a.id1= b.node and a.id2= c.node and b.subnet = 2 and c.subnet = . ;
+NOTE: No useful index exists on dataset WORKX.ids for indexed join use
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Data set "WORK.new" has 0 observation(s) and 1 variable(s)
+SYMBOLGEN: Macro variable directed resolved to 0
+MLOGIC(UTL_SUBNET): %IF condition "&directed" ne "1"  evaluated to TRUE
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable in resolved to workx.ids
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable subnetid resolved to 2
+MPRINT(UTL_SUBNET):  insert into new select distinct a.id1 as node from workx.ids a, nodes b, nodes c where a.id2= b.node and a.id1= c.node and b.subnet = 2 and c.subnet = . ;
+NOTE: No useful index exists on dataset WORKX.ids for indexed join use
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: 0 records were inserted into WORK.new
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Update subnet for these nodes ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable subnetid resolved to 2
+MPRINT(UTL_SUBNET):  update nodes set subnet=2 where node in (select node from new ) ;
+NOTE: 0 record(s) updated in table WORK.nodes
+SYMBOLGEN: Macro variable sqlobs resolved to 0
+MLOGIC(UTL_SUBNET): %DO %WHILE(&sqlobs) condition is FALSE; loop will not iterate again
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Get next unassigned node ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable getnext resolved to select quote(trim(node),"'") into :next from nodes where subnet=.
+MPRINT(UTL_SUBNET):  select quote(trim(node),"'") into :next from nodes where subnet=. ;
+SYMBOLGEN: Macro variable sqlobs resolved to 5
+SYMBOLGEN: Macro variable sqlrc resolved to 0
+MLOGIC(UTL_SUBNET): %DO %WHILE(&sqlobs and not &sqlrc) condition is TRUE; loop will iterate again
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Set subnet to next id ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MLOGIC(UTL_SUBNET): %LET (variable name is subnetid)
+SYMBOLGEN: Macro variable subnetid resolved to 2
+SYMBOLGEN: Macro variable subnetid resolved to 3
+SYMBOLGEN: Macro variable next resolved to 'E'
+MPRINT(UTL_SUBNET):  update nodes set subnet=3 where node='E' ;
+NOTE: 1 record(s) updated in table WORK.nodes
+
+6                                                                                                                         Altair SLC
+
+SYMBOLGEN: Macro variable sqlobs resolved to 1
+MLOGIC(UTL_SUBNET): %DO %WHILE(&sqlobs) loop beginning; condition is TRUE
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Get list of connected nodes for this subnet ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable in resolved to workx.ids
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable subnetid resolved to 3
+MPRINT(UTL_SUBNET):  create table new as select distinct a.id2 as node from workx.ids a, nodes b, nodes c where a.id1= b.node and a.id2= c.node and b.subnet = 3 and c.subnet = . ;
+NOTE: No useful index exists on dataset WORKX.ids for indexed join use
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Data set "WORK.new" has 2 observation(s) and 1 variable(s)
+SYMBOLGEN: Macro variable directed resolved to 0
+MLOGIC(UTL_SUBNET): %IF condition "&directed" ne "1"  evaluated to TRUE
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable in resolved to workx.ids
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable subnetid resolved to 3
+MPRINT(UTL_SUBNET):  insert into new select distinct a.id1 as node from workx.ids a, nodes b, nodes c where a.id2= b.node and a.id1= c.node and b.subnet = 3 and c.subnet = . ;
+NOTE: No useful index exists on dataset WORKX.ids for indexed join use
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: 0 records were inserted into WORK.new
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Update subnet for these nodes ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable subnetid resolved to 3
+MPRINT(UTL_SUBNET):  update nodes set subnet=3 where node in (select node from new ) ;
+NOTE: 2 record(s) updated in table WORK.nodes
+SYMBOLGEN: Macro variable sqlobs resolved to 2
+MLOGIC(UTL_SUBNET): %DO %WHILE(&sqlobs) condition is TRUE; loop will iterate again
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Get list of connected nodes for this subnet ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable in resolved to workx.ids
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable subnetid resolved to 3
+MPRINT(UTL_SUBNET):  create table new as select distinct a.id2 as node from workx.ids a, nodes b, nodes c where a.id1= b.node and a.id2= c.node and b.subnet = 3 and c.subnet = . ;
+NOTE: No useful index exists on dataset WORKX.ids for indexed join use
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Data set "WORK.new" has 0 observation(s) and 1 variable(s)
+SYMBOLGEN: Macro variable directed resolved to 0
+MLOGIC(UTL_SUBNET): %IF condition "&directed" ne "1"  evaluated to TRUE
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable in resolved to workx.ids
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable subnetid resolved to 3
+MPRINT(UTL_SUBNET):  insert into new select distinct a.id1 as node from workx.ids a, nodes b, nodes c where a.id2= b.node and a.id1= c.node and b.subnet = 3 and c.subnet = . ;
+NOTE: No useful index exists on dataset WORKX.ids for indexed join use
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: 0 records were inserted into WORK.new
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Update subnet for these nodes ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+
+7                                                                                                                         Altair SLC
+
+SYMBOLGEN: Macro variable subnetid resolved to 3
+MPRINT(UTL_SUBNET):  update nodes set subnet=3 where node in (select node from new ) ;
+NOTE: 0 record(s) updated in table WORK.nodes
+SYMBOLGEN: Macro variable sqlobs resolved to 0
+MLOGIC(UTL_SUBNET): %DO %WHILE(&sqlobs) condition is FALSE; loop will not iterate again
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Get next unassigned node ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable getnext resolved to select quote(trim(node),"'") into :next from nodes where subnet=.
+MPRINT(UTL_SUBNET):  select quote(trim(node),"'") into :next from nodes where subnet=. ;
+SYMBOLGEN: Macro variable sqlobs resolved to 2
+SYMBOLGEN: Macro variable sqlrc resolved to 0
+MLOGIC(UTL_SUBNET): %DO %WHILE(&sqlobs and not &sqlrc) condition is TRUE; loop will iterate again
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Set subnet to next id ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MLOGIC(UTL_SUBNET): %LET (variable name is subnetid)
+SYMBOLGEN: Macro variable subnetid resolved to 3
+SYMBOLGEN: Macro variable subnetid resolved to 4
+SYMBOLGEN: Macro variable next resolved to 'F'
+MPRINT(UTL_SUBNET):  update nodes set subnet=4 where node='F' ;
+NOTE: 1 record(s) updated in table WORK.nodes
+SYMBOLGEN: Macro variable sqlobs resolved to 1
+MLOGIC(UTL_SUBNET): %DO %WHILE(&sqlobs) loop beginning; condition is TRUE
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Get list of connected nodes for this subnet ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable in resolved to workx.ids
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable subnetid resolved to 4
+MPRINT(UTL_SUBNET):  create table new as select distinct a.id2 as node from workx.ids a, nodes b, nodes c where a.id1= b.node and a.id2= c.node and b.subnet = 4 and c.subnet = . ;
+NOTE: No useful index exists on dataset WORKX.ids for indexed join use
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Data set "WORK.new" has 1 observation(s) and 1 variable(s)
+SYMBOLGEN: Macro variable directed resolved to 0
+MLOGIC(UTL_SUBNET): %IF condition "&directed" ne "1"  evaluated to TRUE
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable in resolved to workx.ids
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable subnetid resolved to 4
+MPRINT(UTL_SUBNET):  insert into new select distinct a.id1 as node from workx.ids a, nodes b, nodes c where a.id2= b.node and a.id1= c.node and b.subnet = 4 and c.subnet = . ;
+NOTE: No useful index exists on dataset WORKX.ids for indexed join use
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: 0 records were inserted into WORK.new
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Update subnet for these nodes ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable subnetid resolved to 4
+MPRINT(UTL_SUBNET):  update nodes set subnet=4 where node in (select node from new ) ;
+NOTE: 1 record(s) updated in table WORK.nodes
+SYMBOLGEN: Macro variable sqlobs resolved to 1
+MLOGIC(UTL_SUBNET): %DO %WHILE(&sqlobs) condition is TRUE; loop will iterate again
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Get list of connected nodes for this subnet ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable in resolved to workx.ids
+SYMBOLGEN: Macro variable from resolved to id1
+
+8                                                                                                                         Altair SLC
+
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable subnetid resolved to 4
+MPRINT(UTL_SUBNET):  create table new as select distinct a.id2 as node from workx.ids a, nodes b, nodes c where a.id1= b.node and a.id2= c.node and b.subnet = 4 and c.subnet = . ;
+NOTE: No useful index exists on dataset WORKX.ids for indexed join use
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Data set "WORK.new" has 0 observation(s) and 1 variable(s)
+SYMBOLGEN: Macro variable directed resolved to 0
+MLOGIC(UTL_SUBNET): %IF condition "&directed" ne "1"  evaluated to TRUE
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable in resolved to workx.ids
+SYMBOLGEN: Macro variable to resolved to id2
+SYMBOLGEN: Macro variable from resolved to id1
+SYMBOLGEN: Macro variable subnetid resolved to 4
+MPRINT(UTL_SUBNET):  insert into new select distinct a.id1 as node from workx.ids a, nodes b, nodes c where a.id2= b.node and a.id1= c.node and b.subnet = 4 and c.subnet = . ;
+NOTE: No useful index exists on dataset WORKX.ids for indexed join use
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: Indexes on dataset WORK.nodes not considered for indexed join due to the presence of extra WHERE clause
+NOTE: 0 records were inserted into WORK.new
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Update subnet for these nodes ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable subnetid resolved to 4
+MPRINT(UTL_SUBNET):  update nodes set subnet=4 where node in (select node from new ) ;
+NOTE: 0 record(s) updated in table WORK.nodes
+SYMBOLGEN: Macro variable sqlobs resolved to 0
+MLOGIC(UTL_SUBNET): %DO %WHILE(&sqlobs) condition is FALSE; loop will not iterate again
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Get next unassigned node ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable getnext resolved to select quote(trim(node),"'") into :next from nodes where subnet=.
+MPRINT(UTL_SUBNET):  select quote(trim(node),"'") into :next from nodes where subnet=. ;
+NOTE: No rows were selected
+SYMBOLGEN: Macro variable sqlobs resolved to 0
+SYMBOLGEN: Macro variable sqlrc resolved to 0
+MLOGIC(UTL_SUBNET): %DO %WHILE(&sqlobs and not &sqlrc) condition is FALSE; loop will not iterate again
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+MPRINT(UTL_SUBNET):  * Create output dataset by adding subnet number. ;
+MPRINT(UTL_SUBNET):  *----------------------------------------------------------------------;
+SYMBOLGEN: Macro variable out resolved to workx.want
+SYMBOLGEN: Macro variable subnet resolved to group
+SYMBOLGEN: Macro variable in resolved to workx.ids
+SYMBOLGEN: Macro variable from resolved to id1
+MPRINT(UTL_SUBNET):  create table workx.want as select distinct a.*,b.subnet as group from workx.ids a , nodes b where a.id1 = b.node ;
+NOTE: No useful index exists on dataset WORKX.ids for indexed join use
+NOTE: No useful index exists on dataset WORK.nodes for indexed join use
+NOTE: Data set "WORKX.want" has 10 observation(s) and 3 variable(s)
+MPRINT(UTL_SUBNET):  quit;
+NOTE: Procedure sql step took :
+      real time       : 0.826
+      user cpu time   : 0.187
+      system cpu time : 0.234
+      Timestamp       :   29JAN26:07:46:45
+      Peak working set    : 29876k
+      Current working set : 29252k
+      Page fault count    : 2177
+
+
+MLOGIC(UTL_SUBNET): Ending execution
+3
+4         proc print data=workx.want;
+5         run;
+NOTE: 10 observations were read from "WORKX.want"
+
+9                                                                                                                         Altair SLC
+
+NOTE: Procedure print step took :
+      real time       : 0.005
+      user cpu time   : 0.000
+      system cpu time : 0.000
+      Timestamp       :   29JAN26:07:46:45
+      Peak working set    : 29876k
+      Current working set : 29692k
+      Page fault count    : 87
+
+
+6
+ERROR: Error printed on page 1
+
+NOTE: Submitted statements took :
+      real time       : 0.952
+      user cpu time   : 0.203
+      system cpu time : 0.281
+      Timestamp       :   29JAN26:07:46:45
+      Peak working set    : 29876k
+      Current working set : 29684k
+      Page fault count    : 5006
+
 /*              _
   ___ _ __   __| |
  / _ \ `_ \ / _` |
@@ -485,3 +1211,4 @@ NOTE: Submitted statements took :
  \___|_| |_|\__,_|
 
 */
+
