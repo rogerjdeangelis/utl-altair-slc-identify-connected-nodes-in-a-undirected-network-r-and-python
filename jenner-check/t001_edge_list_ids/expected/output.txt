@@ -1,0 +1,15 @@
+
+  Obs  ID1  ID2
+-----  ---  ---
+    1  A    Z
+    2  A    Y
+    3  A    X
+    4  B    Z
+    5  B    Y
+    6  C    W
+    7  D    W
+    8  E    V
+    9  E    U
+   10  F    T
+
+

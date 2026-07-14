@@ -1,0 +1,7 @@
+{
+  "bundle": "t001_edge_list_ids",
+  "source_file": "utl-altair-slc-identify-connected-nodes-in-a-undirected-network-r-and-python.sas",
+  "source_blob_sha": "87dad5682444e1907ba81e88759ba91afcff88ac",
+  "source_commit": "63c5a4c04a3889afe12b1d213fc6de78ccc17601",
+  "notes": "The repo's undirected-network input: VALIDVARNAME=UPCASE + the A-Z edge-list DATALINES that build WORKX.IDS, printed. Only change from upstream is dropping the external WORKX libname for WORK so the bundle is self-contained; option, data and PROC PRINT are the author's, unmodified. Reproduces the WORKX.IDS obs=10 table documented in the file."
+}
