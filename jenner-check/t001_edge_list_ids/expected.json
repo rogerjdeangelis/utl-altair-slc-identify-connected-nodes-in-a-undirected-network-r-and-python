@@ -1,0 +1,14 @@
+{
+  "_captured_at": "2026-07-14T11:05:38Z",
+  "_captured_run_id": "r_3beb11ad0af1483da74c94a5ffd66313",
+  "status": "ok",
+  "exit_code": 0,
+  "log_contains": [
+    "NOTE: Option VALIDVARNAME changed to UPCASE.",
+    "NOTE: Read 10 rows from DATALINES.",
+    "NOTE: Wrote ids (10 rows, 2 columns).",
+    "NOTE: PROC PRINT completed: 10 observations printed, 2 variables"
+  ],
+  "log_does_not_contain": ["ERROR:", "[JENNER-ERROR"],
+  "diagnostics": {"parse_warnings": [], "runtime_warnings": []}
+}
